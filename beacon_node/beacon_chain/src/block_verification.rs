@@ -60,7 +60,7 @@ use state_processing::{
     block_signature_verifier::{BlockSignatureVerifier, Error as BlockSignatureVerifierError},
     per_block_processing, per_slot_processing,
     state_advance::partial_state_advance,
-    BlockProcessingError, BlockSignatureStrategy, SlotProcessingError,
+    BlockProcessingError, BlockSignatureStrategy, SlotProcessingError, VerifyParentBlockRoot,
 };
 use std::borrow::Cow;
 use std::fs;
@@ -1040,6 +1040,7 @@ impl<'a, T: BeaconChainTypes> FullyVerifiedBlock<'a, T> {
             Some(block_root),
             // Signatures were verified earlier in this function.
             BlockSignatureStrategy::NoVerification,
+            VerifyParentBlockRoot::True,
             &chain.spec,
         ) {
             match err {

@@ -5,6 +5,7 @@ use crate::common::{
 };
 use crate::per_block_processing::errors::{BlockProcessingError, IntoWithIndex};
 use crate::VerifySignatures;
+use rayon::prelude::*;
 use safe_arith::SafeArith;
 use types::consts::altair::{PARTICIPATION_FLAG_WEIGHTS, PROPOSER_WEIGHT, WEIGHT_DENOMINATOR};
 
@@ -43,13 +44,12 @@ pub mod base {
     pub fn process_attestations<T: EthSpec>(
         state: &mut BeaconState<T>,
         attestations: &[Attestation<T>],
+        proposer_index: u64,
         verify_signatures: VerifySignatures,
         spec: &ChainSpec,
     ) -> Result<(), BlockProcessingError> {
         // Ensure the previous epoch cache exists.
         state.build_committee_cache(RelativeEpoch::Previous, spec)?;
-
-        let proposer_index = state.get_beacon_proposer_index(state.slot(), spec)? as u64;
 
         // Verify and apply each attestation.
         for (i, attestation) in attestations.iter().enumerate() {
@@ -226,7 +226,13 @@ pub fn process_attestations<'a, T: EthSpec>(
 ) -> Result<(), BlockProcessingError> {
     match block_body {
         BeaconBlockBodyRef::Base(_) => {
-            base::process_attestations(state, block_body.attestations(), verify_signatures, spec)?;
+            base::process_attestations(
+                state,
+                block_body.attestations(),
+                proposer_index,
+                verify_signatures,
+                spec,
+            )?;
         }
         BeaconBlockBodyRef::Altair(_) => {
             altair::process_attestations(
@@ -283,6 +289,7 @@ pub fn process_deposits<T: EthSpec>(
     );
 
     // Verify merkle proofs in parallel.
+    // FIXME(freezer): could elide this check when replaying blocks
     deposits
         .par_iter()
         .enumerate()
@@ -332,6 +339,7 @@ pub fn process_deposit<T: EthSpec>(
     } else {
         // The signature should be checked for new validators. Return early for a bad
         // signature.
+        // FIXME(freezer): this takes about 1ms, but can't easily be skipped
         if verify_deposit_signature(&deposit.data, spec).is_err() {
             return Ok(());
         }
