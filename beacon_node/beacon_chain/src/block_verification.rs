@@ -60,7 +60,7 @@ use state_processing::{
     block_signature_verifier::{BlockSignatureVerifier, Error as BlockSignatureVerifierError},
     per_block_processing, per_slot_processing,
     state_advance::partial_state_advance,
-    BlockProcessingError, BlockSignatureStrategy, SlotProcessingError, VerifyParentBlockRoot,
+    BlockProcessingError, SlotProcessingError, VerificationStrategy,
 };
 use std::borrow::Cow;
 use std::fs;
@@ -967,7 +967,9 @@ impl<'a, T: BeaconChainTypes> FullyVerifiedBlock<'a, T> {
                 state_root
             };
 
-            if let Some(summary) = per_slot_processing(&mut state, Some(state_root), &chain.spec)? {
+            if let Some(summary) =
+                per_slot_processing(&mut state, Some(state_root), None, &chain.spec)?
+            {
                 // Expose Prometheus metrics.
                 if let Err(e) = summary.observe_metrics() {
                     error!(
@@ -977,7 +979,7 @@ impl<'a, T: BeaconChainTypes> FullyVerifiedBlock<'a, T> {
                         "error" => ?e
                     );
                 }
-                summaries.push(summary);
+                summaries.push(summary)
             }
         }
 
@@ -1039,8 +1041,7 @@ impl<'a, T: BeaconChainTypes> FullyVerifiedBlock<'a, T> {
             &block,
             Some(block_root),
             // Signatures were verified earlier in this function.
-            BlockSignatureStrategy::NoVerification,
-            VerifyParentBlockRoot::True,
+            VerificationStrategy::no_signatures(),
             &chain.spec,
         ) {
             match err {
