@@ -727,7 +727,7 @@ mod test {
 
         let chain = BeaconChainBuilder::new(MinimalEthSpec)
             .logger(log.clone())
-            .store(Arc::new(store))
+            .store(store)
             .genesis_state(genesis_state)
             .expect("should build state using recent genesis")
             .dummy_eth1_backend()
