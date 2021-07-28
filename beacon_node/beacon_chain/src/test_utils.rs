@@ -25,6 +25,7 @@ use slot_clock::TestingSlotClock;
 use state_processing::state_advance::complete_state_advance;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Duration;
 use store::{config::StoreConfig, BlockReplay, HotColdDB, ItemStore, LevelDB, MemoryStore};
 use task_executor::ShutdownReason;

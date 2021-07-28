@@ -28,7 +28,7 @@ pub fn persist_dht<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>>(
 
 /// Attempts to clear any DHT entries.
 pub fn clear_dht<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>>(
-    store: Arc<HotColdDB<E, Hot, Cold>>,
+    store: HotColdDB<E, Hot, Cold>,
 ) -> Result<(), store::Error> {
     store.hot_db.delete::<PersistedDht>(&DHT_DB_KEY)
 }
