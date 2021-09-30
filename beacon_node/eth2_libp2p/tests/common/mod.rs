@@ -7,13 +7,19 @@ use eth2_libp2p::{Libp2pEvent, NetworkConfig};
 use libp2p::gossipsub::GossipsubConfigBuilder;
 use slog::{debug, error, o, Drain};
 use std::net::{TcpListener, UdpSocket};
+use std::sync::Arc;
 use std::sync::Weak;
 use std::time::Duration;
 use tokio::runtime::Runtime;
-use types::{ChainSpec, EnrForkId, MinimalEthSpec};
+use types::{ChainSpec, EnrForkId, ForkContext, Hash256, MinimalEthSpec};
 
 type E = MinimalEthSpec;
 use tempfile::Builder as TempBuilder;
+
+/// Returns a dummy fork context
+fn fork_context() -> ForkContext {
+    ForkContext::new::<E>(types::Slot::new(0), Hash256::zero(), &ChainSpec::minimal())
+}
 
 pub struct Libp2pInstance(LibP2PService<E>, exit_future::Signal);
 
@@ -109,12 +115,14 @@ pub async fn build_libp2p_instance(
     let (signal, exit) = exit_future::signal();
     let (shutdown_tx, _) = futures::channel::mpsc::channel(1);
     let executor = task_executor::TaskExecutor::new(rt, exit, log.clone(), shutdown_tx);
+    let fork_context = Arc::new(fork_context());
     Libp2pInstance(
         LibP2PService::new(
             executor,
             &config,
             EnrForkId::default(),
             &log,
+            fork_context,
             &ChainSpec::minimal(),
         )
         .await
@@ -126,7 +134,7 @@ pub async fn build_libp2p_instance(
 
 #[allow(dead_code)]
 pub fn get_enr(node: &LibP2PService<E>) -> Enr {
-    node.swarm.local_enr()
+    node.swarm.behaviour().local_enr()
 }
 
 // Returns `n` libp2p peers in fully connected topology.
@@ -142,7 +150,7 @@ pub async fn build_full_mesh(
     }
     let multiaddrs: Vec<Multiaddr> = nodes
         .iter()
-        .map(|x| get_enr(&x).multiaddr()[1].clone())
+        .map(|x| get_enr(x).multiaddr()[1].clone())
         .collect();
 
     for (i, node) in nodes.iter_mut().enumerate().take(n) {
@@ -171,7 +179,7 @@ pub async fn build_node_pair(
     let mut sender = build_libp2p_instance(rt.clone(), vec![], sender_log).await;
     let mut receiver = build_libp2p_instance(rt, vec![], receiver_log).await;
 
-    let receiver_multiaddr = receiver.swarm.local_enr().multiaddr()[1].clone();
+    let receiver_multiaddr = receiver.swarm.behaviour_mut().local_enr().multiaddr()[1].clone();
 
     // let the two nodes set up listeners
     let sender_fut = async {
@@ -216,7 +224,7 @@ pub async fn build_linear(rt: Weak<Runtime>, log: slog::Logger, n: usize) -> Vec
 
     let multiaddrs: Vec<Multiaddr> = nodes
         .iter()
-        .map(|x| get_enr(&x).multiaddr()[1].clone())
+        .map(|x| get_enr(x).multiaddr()[1].clone())
         .collect();
     for i in 0..n - 1 {
         match libp2p::Swarm::dial_addr(&mut nodes[i].swarm, multiaddrs[i + 1].clone()) {

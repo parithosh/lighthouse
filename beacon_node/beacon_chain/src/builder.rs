@@ -1,5 +1,6 @@
 use crate::beacon_chain::{BEACON_CHAIN_DB_KEY, ETH1_CACHE_DB_KEY, OP_POOL_DB_KEY};
 use crate::eth1_chain::{CachingEth1Backend, SszEth1};
+use crate::fork_revert::{reset_fork_choice_to_finalization, revert_to_fork_boundary};
 use crate::head_tracker::HeadTracker;
 use crate::migrate::{BackgroundMigrator, MigratorConfig};
 use crate::persisted_beacon_chain::PersistedBeaconChain;
@@ -19,12 +20,12 @@ use futures::channel::mpsc::Sender;
 use operation_pool::{OperationPool, PersistedOperationPool};
 use parking_lot::RwLock;
 use slasher::Slasher;
-use slog::{crit, info, Logger};
+use slog::{crit, error, info, Logger};
 use slot_clock::{SlotClock, TestingSlotClock};
 use std::marker::PhantomData;
 use std::sync::Arc;
 use std::time::Duration;
-use store::{HotColdDB, ItemStore};
+use store::{Error as StoreError, HotColdDB, ItemStore};
 use task_executor::ShutdownReason;
 use types::{
     BeaconBlock, BeaconState, ChainSpec, EthSpec, Graffiti, Hash256, PublicKeyBytes, Signature,
@@ -135,6 +136,11 @@ where
         self
     }
 
+    /// Get a reference to the builder's spec.
+    pub fn get_spec(&self) -> &ChainSpec {
+        &self.spec
+    }
+
     /// Sets the maximum number of blocks that will be skipped when processing
     /// some consensus messages.
     ///
@@ -236,21 +242,28 @@ where
             .ok_or("Fork choice not found in store")?;
 
         let genesis_block = store
-            .get_item::<SignedBeaconBlock<TEthSpec>>(&chain.genesis_block_root)
-            .map_err(|e| format!("DB error when reading genesis block: {:?}", e))?
+            .get_block(&chain.genesis_block_root)
+            .map_err(|e| descriptive_db_error("genesis block", &e))?
             .ok_or("Genesis block not found in store")?;
         let genesis_state = store
             .get_state(&genesis_block.state_root(), Some(genesis_block.slot()))
-            .map_err(|e| format!("DB error when reading genesis state: {:?}", e))?
+            .map_err(|e| descriptive_db_error("genesis state", &e))?
             .ok_or("Genesis block not found in store")?;
 
-        self.genesis_time = Some(genesis_state.genesis_time);
+        self.genesis_time = Some(genesis_state.genesis_time());
 
         self.op_pool = Some(
             store
                 .get_item::<PersistedOperationPool<TEthSpec>>(&OP_POOL_DB_KEY)
                 .map_err(|e| format!("DB error whilst reading persisted op pool: {:?}", e))?
                 .map(PersistedOperationPool::into_operation_pool)
+                .transpose()
+                .map_err(|e| {
+                    format!(
+                        "Error while creating the op pool from the persisted op pool: {:?}",
+                        e
+                    )
+                })?
                 .unwrap_or_else(OperationPool::new),
         );
 
@@ -282,7 +295,7 @@ where
             .build_all_caches(&self.spec)
             .map_err(|e| format!("Failed to build genesis state caches: {:?}", e))?;
 
-        let beacon_state_root = beacon_block.message.state_root;
+        let beacon_state_root = beacon_block.message().state_root();
         let beacon_block_root = beacon_block.canonical_root();
 
         self.genesis_state_root = Some(beacon_state_root);
@@ -292,12 +305,12 @@ where
             .put_state(&beacon_state_root, &beacon_state)
             .map_err(|e| format!("Failed to store genesis state: {:?}", e))?;
         store
-            .put_item(&beacon_block_root, &beacon_block)
+            .put_block(&beacon_block_root, beacon_block.clone())
             .map_err(|e| format!("Failed to store genesis block: {:?}", e))?;
 
         // Store the genesis block under the `ZERO_HASH` key.
         store
-            .put_item(&Hash256::zero(), &beacon_block)
+            .put_block(&Hash256::zero(), beacon_block.clone())
             .map_err(|e| {
                 format!(
                     "Failed to store genesis block under 0x00..00 alias: {:?}",
@@ -313,16 +326,16 @@ where
 
         let fc_store = BeaconForkChoiceStore::get_forkchoice_store(store, &genesis);
 
-        let fork_choice = ForkChoice::from_genesis(
+        let fork_choice = ForkChoice::from_anchor(
             fc_store,
             genesis.beacon_block_root,
-            &genesis.beacon_block.message,
+            &genesis.beacon_block,
             &genesis.beacon_state,
         )
         .map_err(|e| format!("Unable to build initialize ForkChoice: {:?}", e))?;
 
         self.fork_choice = Some(fork_choice);
-        self.genesis_time = Some(genesis.beacon_state.genesis_time);
+        self.genesis_time = Some(genesis.beacon_state.genesis_time());
 
         Ok(self.empty_op_pool())
     }
@@ -347,6 +360,13 @@ where
     pub fn slot_clock(mut self, clock: TSlotClock) -> Self {
         self.slot_clock = Some(clock);
         self
+    }
+
+    /// Fetch a reference to the slot clock.
+    ///
+    /// Can be used for mutation during testing due to `SlotClock`'s internal mutability.
+    pub fn get_slot_clock(&self) -> Option<&TSlotClock> {
+        self.slot_clock.as_ref()
     }
 
     /// Sets a `Sender` to allow the beacon chain to send shutdown signals.
@@ -420,6 +440,7 @@ where
         let mut validator_monitor = self
             .validator_monitor
             .ok_or("Cannot build without a validator monitor")?;
+        let head_tracker = Arc::new(self.head_tracker.unwrap_or_default());
 
         let current_slot = if slot_clock
             .is_prior_to_genesis()
@@ -430,19 +451,56 @@ where
             slot_clock.now().ok_or("Unable to read slot")?
         };
 
-        let head_block_root = fork_choice
+        let initial_head_block_root = fork_choice
             .get_head(current_slot)
             .map_err(|e| format!("Unable to get fork choice head: {:?}", e))?;
 
-        let head_block = store
-            .get_item::<SignedBeaconBlock<TEthSpec>>(&head_block_root)
-            .map_err(|e| format!("DB error when reading head block: {:?}", e))?
-            .ok_or("Head block not found in store")?;
+        // Try to decode the head block according to the current fork, if that fails, try
+        // to backtrack to before the most recent fork.
+        let (head_block_root, head_block, head_reverted) =
+            match store.get_block(&initial_head_block_root) {
+                Ok(Some(block)) => (initial_head_block_root, block, false),
+                Ok(None) => return Err("Head block not found in store".into()),
+                Err(StoreError::SszDecodeError(_)) => {
+                    error!(
+                        log,
+                        "Error decoding head block";
+                        "message" => "This node has likely missed a hard fork. \
+                                      It will try to revert the invalid blocks and keep running, \
+                                      but any stray blocks and states will not be deleted. \
+                                      Long-term you should consider re-syncing this node."
+                    );
+                    let (block_root, block) = revert_to_fork_boundary(
+                        current_slot,
+                        initial_head_block_root,
+                        store.clone(),
+                        &self.spec,
+                        &log,
+                    )?;
+
+                    // Update head tracker.
+                    head_tracker.register_block(block_root, block.parent_root(), block.slot());
+                    (block_root, block, true)
+                }
+                Err(e) => return Err(descriptive_db_error("head block", &e)),
+            };
+
         let head_state_root = head_block.state_root();
         let head_state = store
             .get_state(&head_state_root, Some(head_block.slot()))
-            .map_err(|e| format!("DB error when reading head state: {:?}", e))?
+            .map_err(|e| descriptive_db_error("head state", &e))?
             .ok_or("Head state not found in store")?;
+
+        // If the head reverted then we need to reset fork choice using the new head's finalized
+        // checkpoint.
+        if head_reverted {
+            fork_choice = reset_fork_choice_to_finalization(
+                head_block_root,
+                &head_state,
+                store.clone(),
+                &self.spec,
+            )?;
+        }
 
         let mut canonical_head = BeaconSnapshot {
             beacon_block_root: head_block_root,
@@ -460,7 +518,7 @@ where
         //
         // This is a sanity check to detect database corruption.
         let fc_finalized = fork_choice.finalized_checkpoint();
-        let head_finalized = canonical_head.beacon_state.finalized_checkpoint;
+        let head_finalized = canonical_head.beacon_state.finalized_checkpoint();
         if fc_finalized != head_finalized {
             if head_finalized.root == Hash256::zero()
                 && head_finalized.epoch == fc_finalized.epoch
@@ -506,11 +564,21 @@ where
             // TODO: allow for persisting and loading the pool from disk.
             naive_aggregation_pool: <_>::default(),
             // TODO: allow for persisting and loading the pool from disk.
+            naive_sync_aggregation_pool: <_>::default(),
+            // TODO: allow for persisting and loading the pool from disk.
             observed_attestations: <_>::default(),
             // TODO: allow for persisting and loading the pool from disk.
-            observed_attesters: <_>::default(),
+            observed_sync_contributions: <_>::default(),
+            // TODO: allow for persisting and loading the pool from disk.
+            observed_gossip_attesters: <_>::default(),
+            // TODO: allow for persisting and loading the pool from disk.
+            observed_block_attesters: <_>::default(),
+            // TODO: allow for persisting and loading the pool from disk.
+            observed_sync_contributors: <_>::default(),
             // TODO: allow for persisting and loading the pool from disk.
             observed_aggregators: <_>::default(),
+            // TODO: allow for persisting and loading the pool from disk.
+            observed_sync_aggregators: <_>::default(),
             // TODO: allow for persisting and loading the pool from disk.
             observed_block_producers: <_>::default(),
             // TODO: allow for persisting and loading the pool from disk.
@@ -518,13 +586,13 @@ where
             observed_proposer_slashings: <_>::default(),
             observed_attester_slashings: <_>::default(),
             eth1_chain: self.eth1_chain,
-            genesis_validators_root: canonical_head.beacon_state.genesis_validators_root,
+            genesis_validators_root: canonical_head.beacon_state.genesis_validators_root(),
             canonical_head: TimeoutRwLock::new(canonical_head.clone()),
             genesis_block_root,
             genesis_state_root,
             fork_choice: RwLock::new(fork_choice),
             event_handler: self.event_handler,
-            head_tracker: Arc::new(self.head_tracker.unwrap_or_default()),
+            head_tracker,
             snapshot_cache: TimeoutRwLock::new(SnapshotCache::new(
                 DEFAULT_SNAPSHOT_CACHE_SIZE,
                 canonical_head,
@@ -532,6 +600,7 @@ where
             shuffling_cache: TimeoutRwLock::new(ShufflingCache::new()),
             beacon_proposer_cache: <_>::default(),
             validator_pubkey_cache: TimeoutRwLock::new(validator_pubkey_cache),
+            attester_cache: <_>::default(),
             disabled_forks: self.disabled_forks,
             shutdown_sender: self
                 .shutdown_sender
@@ -546,6 +615,16 @@ where
             .head()
             .map_err(|e| format!("Failed to get head: {:?}", e))?;
 
+        // Prime the attester cache with the head state.
+        beacon_chain
+            .attester_cache
+            .maybe_cache_state(
+                &head.beacon_state,
+                head.beacon_block_root,
+                &beacon_chain.spec,
+            )
+            .map_err(|e| format!("Failed to prime attester cache: {:?}", e))?;
+
         // Only perform the check if it was configured.
         if let Some(wss_checkpoint) = beacon_chain.config.weak_subjectivity_checkpoint {
             if let Err(e) = beacon_chain.verify_weak_subjectivity_checkpoint(
@@ -558,7 +637,7 @@ where
                     "Weak subjectivity checkpoint verification failed on startup!";
                     "head_block_root" => format!("{}", head.beacon_block_root),
                     "head_slot" => format!("{}", head.beacon_block.slot()),
-                    "finalized_epoch" => format!("{}", head.beacon_state.finalized_checkpoint.epoch),
+                    "finalized_epoch" => format!("{}", head.beacon_state.finalized_checkpoint().epoch),
                     "wss_checkpoint_epoch" => format!("{}", wss_checkpoint.epoch),
                     "error" => format!("{:?}", e),
                 );
@@ -640,16 +719,32 @@ fn genesis_block<T: EthSpec>(
     genesis_state: &mut BeaconState<T>,
     spec: &ChainSpec,
 ) -> Result<SignedBeaconBlock<T>, String> {
-    let mut genesis_block = SignedBeaconBlock {
-        message: BeaconBlock::empty(&spec),
-        // Empty signature, which should NEVER be read. This isn't to-spec, but makes the genesis
-        // block consistent with every other block.
-        signature: Signature::empty(),
-    };
-    genesis_block.message.state_root = genesis_state
+    let mut genesis_block = BeaconBlock::empty(spec);
+    *genesis_block.state_root_mut() = genesis_state
         .update_tree_hash_cache()
         .map_err(|e| format!("Error hashing genesis state: {:?}", e))?;
-    Ok(genesis_block)
+
+    Ok(SignedBeaconBlock::from_block(
+        genesis_block,
+        // Empty signature, which should NEVER be read. This isn't to-spec, but makes the genesis
+        // block consistent with every other block.
+        Signature::empty(),
+    ))
+}
+
+// Helper function to return more useful errors when reading from the database.
+fn descriptive_db_error(item: &str, error: &StoreError) -> String {
+    let additional_info = if let StoreError::SszDecodeError(_) = error {
+        "Ensure the data directory is not initialized for a different network. The \
+        --purge-db flag can be used to permanently delete the existing data directory."
+    } else {
+        "Database corruption may be present. If the issue persists, use \
+        --purge-db to permanently delete the existing data directory."
+    };
+    format!(
+        "DB error when reading {}: {:?}. {}",
+        item, error, additional_info
+    )
 }
 
 #[cfg(not(debug_assertions))]
@@ -714,9 +809,10 @@ mod test {
         let state = head.beacon_state;
         let block = head.beacon_block;
 
-        assert_eq!(state.slot, Slot::new(0), "should start from genesis");
+        assert_eq!(state.slot(), Slot::new(0), "should start from genesis");
         assert_eq!(
-            state.genesis_time, 13_371_337,
+            state.genesis_time(),
+            13_371_337,
             "should have the correct genesis time"
         );
         assert_eq!(
@@ -734,7 +830,7 @@ mod test {
             "should store genesis block under zero hash alias"
         );
         assert_eq!(
-            state.validators.len(),
+            state.validators().len(),
             validator_count,
             "should have correct validator count"
         );
@@ -757,24 +853,25 @@ mod test {
             .expect("should build state");
 
         assert_eq!(
-            state.eth1_data.block_hash,
+            state.eth1_data().block_hash,
             Hash256::from_slice(&[0x42; 32]),
             "eth1 block hash should be co-ordinated junk"
         );
 
         assert_eq!(
-            state.genesis_time, genesis_time,
+            state.genesis_time(),
+            genesis_time,
             "genesis time should be as specified"
         );
 
-        for b in &state.balances {
+        for b in state.balances() {
             assert_eq!(
                 *b, spec.max_effective_balance,
                 "validator balances should be max effective balance"
             );
         }
 
-        for v in &state.validators {
+        for v in state.validators() {
             let creds = v.withdrawal_credentials.as_bytes();
             assert_eq!(
                 creds[0], spec.bls_withdrawal_prefix_byte,
@@ -788,13 +885,13 @@ mod test {
         }
 
         assert_eq!(
-            state.balances.len(),
+            state.balances().len(),
             validator_count,
             "validator balances len should be correct"
         );
 
         assert_eq!(
-            state.validators.len(),
+            state.validators().len(),
             validator_count,
             "validator count should be correct"
         );

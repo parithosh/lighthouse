@@ -1,5 +1,5 @@
-FROM rust:1.50.0 AS builder
-RUN apt-get update && apt-get install -y cmake
+FROM rust:1.53.0 AS builder
+RUN apt-get update && apt-get -y upgrade && apt-get install -y cmake
 COPY . lighthouse
 ARG PORTABLE
 ENV PORTABLE $PORTABLE
@@ -10,7 +10,7 @@ RUN cd lighthouse && LD_LIBRARY_PATH=/lighthouse/libvoidstar/ RUSTFLAGS="-Cpasse
 RUN cargo install --path lcli --force --locked --features portable
 
 FROM debian:buster-slim
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
   libssl-dev \
   ca-certificates \
   && apt-get clean \

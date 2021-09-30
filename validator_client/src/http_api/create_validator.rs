@@ -97,7 +97,7 @@ pub async fn create_validators<P: AsRef<Path>, T: 'static + SlotClock, E: EthSpe
         let validator_dir = ValidatorDirBuilder::new(validator_dir.as_ref().into())
             .voting_keystore(keystores.voting, voting_password.as_bytes())
             .withdrawal_keystore(keystores.withdrawal, withdrawal_password.as_bytes())
-            .create_eth1_tx_data(request.deposit_gwei, &spec)
+            .create_eth1_tx_data(request.deposit_gwei, spec)
             .store_withdrawal_keystore(false)
             .build()
             .map_err(|e| {
@@ -152,7 +152,7 @@ pub async fn create_validators<P: AsRef<Path>, T: 'static + SlotClock, E: EthSpe
             description: request.description.clone(),
             graffiti: request.graffiti.clone(),
             voting_pubkey,
-            eth1_deposit_tx_data: serde_utils::hex::encode(&eth1_deposit_data.rlp),
+            eth1_deposit_tx_data: eth2_serde_utils::hex::encode(&eth1_deposit_data.rlp),
             deposit_gwei: request.deposit_gwei,
         });
     }

@@ -9,8 +9,14 @@ pub const SAME_DATA: &str = "same_data";
 pub const UNREGISTERED: &str = "unregistered";
 pub const FULL_UPDATE: &str = "full_update";
 pub const BEACON_BLOCK: &str = "beacon_block";
+pub const BEACON_BLOCK_HTTP_GET: &str = "beacon_block_http_get";
+pub const BEACON_BLOCK_HTTP_POST: &str = "beacon_block_http_post";
 pub const ATTESTATIONS: &str = "attestations";
+pub const ATTESTATIONS_HTTP_GET: &str = "attestations_http_get";
+pub const ATTESTATIONS_HTTP_POST: &str = "attestations_http_post";
 pub const AGGREGATES: &str = "aggregates";
+pub const AGGREGATES_HTTP_GET: &str = "aggregates_http_get";
+pub const AGGREGATES_HTTP_POST: &str = "aggregates_http_post";
 pub const CURRENT_EPOCH: &str = "current_epoch";
 pub const NEXT_EPOCH: &str = "next_epoch";
 pub const UPDATE_INDICES: &str = "update_indices";
@@ -18,6 +24,10 @@ pub const UPDATE_ATTESTERS_CURRENT_EPOCH: &str = "update_attesters_current_epoch
 pub const UPDATE_ATTESTERS_NEXT_EPOCH: &str = "update_attesters_next_epoch";
 pub const UPDATE_ATTESTERS_FETCH: &str = "update_attesters_fetch";
 pub const UPDATE_ATTESTERS_STORE: &str = "update_attesters_store";
+pub const ATTESTER_DUTIES_HTTP_POST: &str = "attester_duties_http_post";
+pub const PROPOSER_DUTIES_HTTP_GET: &str = "proposer_duties_http_get";
+pub const VALIDATOR_ID_HTTP_GET: &str = "validator_id_http_get";
+pub const SUBSCRIPTIONS_HTTP_POST: &str = "subscriptions_http_post";
 pub const UPDATE_PROPOSERS: &str = "update_proposers";
 pub const SUBSCRIPTIONS: &str = "subscriptions";
 
@@ -57,14 +67,24 @@ lazy_static::lazy_static! {
         "Total count of attempted SelectionProof signings",
         &["status"]
     );
+    pub static ref SIGNED_SYNC_COMMITTEE_MESSAGES_TOTAL: Result<IntCounterVec> = try_create_int_counter_vec(
+        "vc_signed_sync_committee_messages_total",
+        "Total count of attempted SyncCommitteeMessage signings",
+        &["status"]
+    );
+    pub static ref SIGNED_SYNC_COMMITTEE_CONTRIBUTIONS_TOTAL: Result<IntCounterVec> = try_create_int_counter_vec(
+        "vc_signed_sync_committee_contributions_total",
+        "Total count of attempted ContributionAndProof signings",
+        &["status"]
+    );
+    pub static ref SIGNED_SYNC_SELECTION_PROOFS_TOTAL: Result<IntCounterVec> = try_create_int_counter_vec(
+        "vc_signed_sync_selection_proofs_total",
+        "Total count of attempted SyncSelectionProof signings",
+        &["status"]
+    );
     pub static ref DUTIES_SERVICE_TIMES: Result<HistogramVec> = try_create_histogram_vec(
         "vc_duties_service_task_times_seconds",
         "Duration to perform duties service tasks",
-        &["task"]
-    );
-    pub static ref FORK_SERVICE_TIMES: Result<HistogramVec> = try_create_histogram_vec(
-        "vc_fork_service_task_times_seconds",
-        "Duration to perform fork service tasks",
         &["task"]
     );
     pub static ref ATTESTATION_SERVICE_TIMES: Result<HistogramVec> = try_create_histogram_vec(

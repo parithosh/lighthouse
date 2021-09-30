@@ -107,6 +107,10 @@ pub fn get_config<E: EthSpec>(
         client_config.http_api.allow_origin = Some(allow_origin.to_string());
     }
 
+    if cli_args.is_present("http-disable-legacy-spec") {
+        client_config.http_api.serve_legacy_spec = false;
+    }
+
     /*
      * Prometheus metrics HTTP server
      */
@@ -260,7 +264,7 @@ pub fn get_config<E: EthSpec>(
     /*
      * Load the eth2 network dir to obtain some additional config values.
      */
-    let eth2_network_config = get_eth2_network_config(&cli_args)?;
+    let eth2_network_config = get_eth2_network_config(cli_args)?;
 
     client_config.eth1.deposit_contract_address = format!("{:?}", spec.deposit_contract_address);
     client_config.eth1.deposit_contract_deploy_block =
@@ -463,6 +467,10 @@ pub fn set_network_config(
         config.import_all_attestations = true;
     }
 
+    if cli_args.is_present("shutdown-after-sync") {
+        config.shutdown_after_sync = true;
+    }
+
     if let Some(listen_address_str) = cli_args.value_of("listen-address") {
         let listen_address = listen_address_str
             .parse()
@@ -606,6 +614,11 @@ pub fn set_network_config(
 
     if cli_args.is_present("disable-enr-auto-update") {
         config.discv5_config.enr_update = false;
+    }
+
+    if cli_args.is_present("disable-packet-filter") {
+        warn!(log, "Discv5 packet filter is disabled");
+        config.discv5_config.enable_packet_filter = false;
     }
 
     if cli_args.is_present("disable-discovery") {

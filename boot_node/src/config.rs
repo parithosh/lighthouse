@@ -19,6 +19,7 @@ pub struct BootNodeConfig<T: EthSpec> {
     pub local_enr: Enr,
     pub local_key: CombinedKey,
     pub auto_update: bool,
+    pub disable_packet_filter: bool,
     phantom: PhantomData<T>,
 }
 
@@ -29,7 +30,7 @@ impl<T: EthSpec> TryFrom<&ArgMatches<'_>> for BootNodeConfig<T> {
         let data_dir = get_data_dir(matches);
 
         // Try and grab network config from input CLI params
-        let eth2_network_config = get_eth2_network_config(&matches)?;
+        let eth2_network_config = get_eth2_network_config(matches)?;
 
         // Try and obtain bootnodes
 
@@ -69,6 +70,7 @@ impl<T: EthSpec> TryFrom<&ArgMatches<'_>> for BootNodeConfig<T> {
         }
 
         let auto_update = matches.is_present("enable-enr_auto_update");
+        let disable_packet_filter = matches.is_present("disable-packet-filter");
 
         // the address to listen on
         let listen_socket =
@@ -83,20 +85,15 @@ impl<T: EthSpec> TryFrom<&ArgMatches<'_>> for BootNodeConfig<T> {
         } else {
             // build the enr_fork_id and add it to the local_enr if it exists
             let enr_fork = {
-                let spec = eth2_network_config
-                    .yaml_config
-                    .as_ref()
-                    .ok_or("The network directory must contain a spec config")?
-                    .apply_to_chain_spec::<T>(&T::default_spec())
-                    .ok_or("The loaded config is not compatible with the current spec")?;
+                let spec = eth2_network_config.chain_spec::<T>()?;
 
                 if eth2_network_config.beacon_state_is_known() {
                     let genesis_state = eth2_network_config.beacon_state::<T>()?;
 
                     slog::info!(logger, "Genesis state found"; "root" => genesis_state.canonical_root().to_string());
-                    let enr_fork = spec.enr_fork_id(
+                    let enr_fork = spec.enr_fork_id::<T>(
                         types::Slot::from(0u64),
-                        genesis_state.genesis_validators_root,
+                        genesis_state.genesis_validators_root(),
                     );
 
                     Some(enr_fork.as_ssz_bytes())
@@ -116,7 +113,7 @@ impl<T: EthSpec> TryFrom<&ArgMatches<'_>> for BootNodeConfig<T> {
 
                 // If we know of the ENR field, add it to the initial construction
                 if let Some(enr_fork_bytes) = enr_fork {
-                    builder.add_value("eth2", &enr_fork_bytes);
+                    builder.add_value("eth2", enr_fork_bytes.as_slice());
                 }
                 builder
                     .build(&local_key)
@@ -133,6 +130,7 @@ impl<T: EthSpec> TryFrom<&ArgMatches<'_>> for BootNodeConfig<T> {
             local_enr,
             local_key,
             auto_update,
+            disable_packet_filter,
             phantom: PhantomData,
         })
     }

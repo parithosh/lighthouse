@@ -209,7 +209,7 @@ impl<E: EthSpec> CandidateBeaconNode<E> {
 
     /// Checks if the node has the correct specification.
     async fn is_compatible(&self, spec: &ChainSpec, log: &Logger) -> Result<(), CandidateError> {
-        let yaml_config = self
+        let config_and_preset = self
             .beacon_node
             .get_config_spec()
             .await
@@ -224,9 +224,8 @@ impl<E: EthSpec> CandidateBeaconNode<E> {
             })?
             .data;
 
-        let beacon_node_spec = yaml_config
-            .apply_to_chain_spec::<E>(&E::default_spec())
-            .ok_or_else(|| {
+        let beacon_node_spec =
+            ChainSpec::from_config::<E>(&config_and_preset.config).ok_or_else(|| {
                 error!(
                     log,
                     "The minimal/mainnet spec type of the beacon node does not match the validator \
@@ -236,11 +235,12 @@ impl<E: EthSpec> CandidateBeaconNode<E> {
                 CandidateError::Incompatible
             })?;
 
-        if !yaml_config.extra_fields.is_empty() {
+        if !config_and_preset.extra_fields.is_empty() {
             debug!(
                 log,
                 "Beacon spec includes unknown fields";
-                "fields" => ?yaml_config.extra_fields
+                "endpoint" => %self.beacon_node,
+                "fields" => ?config_and_preset.extra_fields,
             );
         }
 
@@ -355,7 +355,7 @@ impl<T: SlotClock, E: EthSpec> BeaconNodeFallback<T, E> {
             // status of nodes that were previously not-synced.
             if candidate.status(RequireSynced::Yes).await.is_err() {
                 // There exists a race-condition that could result in `refresh_status` being called
-                // when the status does not require refreshing anymore. This deemed is an
+                // when the status does not require refreshing anymore. This is deemed an
                 // acceptable inefficiency.
                 futures.push(candidate.refresh_status(
                     self.slot_clock.as_ref(),

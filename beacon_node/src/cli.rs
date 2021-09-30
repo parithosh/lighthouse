@@ -46,6 +46,18 @@ pub fn cli_app<'a, 'b>() -> App<'a, 'b> {
                 .takes_value(false),
         )
         .arg(
+            Arg::with_name("disable-packet-filter")
+                .long("disable-packet-filter")
+                .help("Disables the discovery packet filter. Useful for testing in smaller networks")
+                .takes_value(false),
+        )
+        .arg(
+            Arg::with_name("shutdown-after-sync")
+                .long("shutdown-after-sync")
+                .help("Shutdown beacon node as soon as sync is completed")
+                .takes_value(false),
+        )
+        .arg(
             Arg::with_name("zero-ports")
                 .long("zero-ports")
                 .short("z")
@@ -197,6 +209,12 @@ pub fn cli_app<'a, 'b>() -> App<'a, 'b> {
                     If no value is supplied, the CORS allowed origin is set to the listen \
                     address of this server (e.g., http://localhost:5052).")
                 .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("http-disable-legacy-spec")
+                .long("http-disable-legacy-spec")
+                .help("Disable serving of legacy data on the /config/spec endpoint. May be \
+                       disabled by default in a future release.")
         )
         /* Prometheus metrics HTTP server related arguments */
         .arg(
