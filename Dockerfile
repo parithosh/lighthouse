@@ -4,7 +4,7 @@ COPY . lighthouse
 ARG PORTABLE
 ENV PORTABLE $PORTABLE
 # build lighthouse directly with a cargo build command, bypassing the makefile
-RUN cd lighthouse && LD_LIBRARY_PATH=/lighthouse/libvoidstar/ RUSTFLAGS="-Cpasses=sancov -Cllvm-args=-sanitizer-coverage-level=3 -Cllvm-args=-sanitizer-coverage-trace-pc-guard -Ccodegen-units=1 -L/lighthouse/libvoidstar/ -lvoidstar" cargo build --release --manifest-path lighthouse/Cargo.toml --target x86_64-unknown-linux-gnu --features modern --verbose --bin lighthouse
+RUN cd lighthouse && LD_LIBRARY_PATH=/lighthouse/libvoidstar/ RUSTFLAGS="-Cpasses=sancov -Cllvm-args=-sanitizer-coverage-level=3 -Cllvm-args=-sanitizer-coverage-trace-pc-guard -Ccodegen-units=1 -Cdebuginfo=2 -L/lighthouse/libvoidstar/ -lvoidstar" cargo build --release --manifest-path lighthouse/Cargo.toml --target x86_64-unknown-linux-gnu --features modern --verbose --bin lighthouse
 
 # build lcli binary directly with cargo install command, bypassing the makefile
 RUN cargo install --path lcli --force --locked --features portable
